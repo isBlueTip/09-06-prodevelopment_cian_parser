@@ -6,8 +6,20 @@ from datetime import datetime, timedelta
 import time
 import db
 import re
-import json
-from ast import literal_eval
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+formatter = logging.Formatter(
+    '%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+
+LOG_NAME = 'cian_scrapper.log'
+file_handler = logging.FileHandler(LOG_NAME)
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
+
 
 months_dict = {
     'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4,
@@ -20,14 +32,18 @@ offer_types = {
     'Новостройка': 'newBuildingFlatSale',
 }
 
-regions_map = {
-    'Санкт-Петербург': 2,
-    'Новосибирск': 4897,
-}
+# regions_map = {
+#     'Санкт-Петербург': 2,
+#     'Новосибирск': 4897,
+# }
+
+CITIES_LIST = []
 
 URL_NSK = Template('https://cian.ru/cat.php?deal_type=sale&engine_version=2&offer_type=flat&p=$page&region=4897&sort=creation_date_desc')
+URL_SPB = Template('https://cian.ru/cat.php?deal_type=sale&engine_version=2&offer_type=flat&p=$page&region=2&sort=creation_date_desc')
 
-URL_SPB = ''
+CITIES_LIST.append(URL_NSK, URL_SPB)
+
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.79 Safari/537.36'}
 
 
@@ -133,7 +149,7 @@ def parse_card_info(url_timestamp) -> dict:
     return card_info
 
 
-def search_or_create_building(object_data: dict, connection) -> int:
+def search_or_create_building_entry(object_data: dict, connection) -> int:
     address = f'Россия, {card_info.get("city")}, улица {card_info.get("street")}, {card_info.get("house")}'
     search_building = f'''
     SELECT building.building_id
@@ -159,7 +175,8 @@ def search_or_create_building(object_data: dict, connection) -> int:
         ("{city}", {lat}, {lon}, "{address}", {year_house}, {floors_count}, "{house_material_type}");
         '''
         db.execute_query(connection, query=create_building)
-        building_id = int(connection.insert_id())
+        # building_id = connection.cursor().lastrowid
+        building_id = search_or_create_building_entry(object_data, connection)  # TODO добывать id по-человечески!
     return building_id
 
 
@@ -183,37 +200,60 @@ def search_or_create_building(object_data: dict, connection) -> int:
 
 def create_or_update_offer_entry(object_data: dict, connection):
     pprint(object_data)
-    building_id = search_or_create_building(object_data, connection)
+    building_id = search_or_create_building_entry(object_data, connection)
+    # offer_id = object_data.get('offer_id')
+    offer_id = 8
     query = f'''
     SELECT offer.offer_id
     FROM offer
-    WHERE offer_id = {object_data.get('offer_id')};
+    WHERE offer_id = {offer_id};
     '''
     object_entry = db.read_query(connection, query=query)
     if len(object_entry):
-        print('***   CREATING OFFER ENTRY   ***')
-        create_offer = f'''
-         INSERT INTO offer (offer_id, category, price, total_area, floor_num, offer_datetime, building_id) VALUES
-        ({object_data.get("offer_id")}, {object_data.get("category")}, {object_data.get("price")},
-         {object_data.get("total_area")}, {object_data.get("floor_num")}, {object_data.get("offer_datetime")}, 2);
-    '''
-        # update entry only
+        return f'object {offer_id} updated successfully'
+        # print('***   UPDATING OFFER ENTRY   ***')
     else:
-        print('***   UPDATING OFFER ENTRY   ***')
-        # get_or_create building and create offer entry
+        # print('***   CREATING OFFER ENTRY   ***')
+        category = object_data.get('category')
+        price = object_data.get('price')
+        total_area = object_data.get('total_area')
+        floor_num = object_data.get('floor_num')
+        offer_datetime = object_data.get('offer_datetime').strftime("%Y-%m-%d %H:%M:%S")
+        parse_datetime = object_data.get('parse_datetime').strftime("%Y-%m-%d %H:%M:%S")
 
-    # search_or_create_building('типа адрес в моём формате')
-    'creating db entry'
+        create_offer = f'''
+        INSERT INTO offer (offer_id, category, price, total_area, floor_num, parse_datetime, offer_datetime, building_id) VALUES
+        ({offer_id}, "{category}", {price}, {total_area}, {floor_num}, "{parse_datetime}", "{offer_datetime}", {building_id});
+        '''
+        db.execute_query(connection, create_offer)
+        return f'object {offer_id} created successfully'
 
 
 if __name__ == '__main__':
-    flats_links = parse_urls_from_paginated(URL_NSK, parsing_depth=1)
-    connection = db.create_db_connection(db.HOST_NAME, db.USERNAME,
-                                         db.PASSWORD, db.DB_NAME)
-    card_info = parse_card_info(flats_links[0])
-    create_or_update_offer_entry(card_info, connection)
+    flats_links = []
+    for city_url in CITIES_LIST:
+        try:
+            flats_links += parse_urls_from_paginated(city_url, parsing_depth=2)
+        except Exception as error:
+            logger.error(f'an error {error} has occurred during link list parsing, link = {city_url}')
+    try:
+        connection = db.create_db_connection(db.HOST_NAME, db.USERNAME,
+                                             db.PASSWORD, db.DB_NAME)
+    except Exception as error:
+        logger.error(f'an error {error} has occurred during establishing connection to db')
+    # card_info = parse_card_info(flats_links[0])
+    # create_or_update_offer_entry(card_info, connection)
 
-    # for flat in flats_links:
-    #     parse_card_to_db(flat, connection)
-    #     sleep(3)
+    for flat in flats_links:
+        try:
+            card_info = parse_card_info(flat)
+        except Exception as error:
+            logger.error(f'an error {error} has occurred during object list parsing, object = {flat}')
+        try:
+            status = create_or_update_offer_entry(card_info, connection)
+        except Exception as error:
+            logger.error(f'an error {error} has occurred during object list parsing, object = {card_info}')
+        else:
+            logger.info(f'another object ahs been added to db with status: {status}')
+        time.sleep(3)
 
