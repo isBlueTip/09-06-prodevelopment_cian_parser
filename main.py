@@ -67,15 +67,20 @@ def parse_urls_from_paginated(city_url, parsing_depth: int) -> list:  # TODO ins
     result = []
     PARSING_START = datetime.now()
     parsing_depth = PARSING_START - timedelta(days=parsing_depth)
-    page = 15  # TODO change to 1 before prod
+    page = 1
+    # page = 15  # TODO change to 1 before prod
     job_finished = False
     while not job_finished:
         url = city_url.substitute(page=page)
-        # html_source = requests.get(url, headers=HEADERS).text
-
-        with open('html.html', 'r') as file:
-            html_source = file.read()
-        job_finished = True
+        try:
+            html_source = requests.get(url, headers=HEADERS).text
+        except Exception as error:
+            logger.error(f'an error {error} has occurred during parsing {url} page')
+        else:
+            logger.info(f'getting response from {url} page is successful')
+        # with open('html.html', 'r') as file:
+        #     html_source = file.read()
+        # job_finished = True
 
         soup_page = BeautifulSoup(html_source, 'lxml')
         # soup_page = BeautifulSoup(html_source, 'html.parser')
@@ -101,7 +106,7 @@ def parse_urls_from_paginated(city_url, parsing_depth: int) -> list:  # TODO ins
             link = flat.find('a', class_='_93444fe79c--link--eoxce').attrs.get('href')
             result.append({link: offer_pub_datetime})
         page += 1
-        # print('*** GO TO NEXT PAGE ***')
+        logger.info(f'list parsing - leaving {url} page')
         time.sleep(3)
     return result
 
