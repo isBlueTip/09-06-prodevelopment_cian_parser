@@ -1,4 +1,3 @@
-from pprint import pprint
 from bs4 import BeautifulSoup
 import requests
 from string import Template
@@ -7,12 +6,13 @@ import time
 import db
 import re
 import logging
+from requests.adapters import HTTPAdapter, Retry
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 formatter = logging.Formatter(
-    '%(asctime)s | %(name)s | %(levelname)s | %(message)s')
+    '%(asctime)s | %(name)s | %(levelname)s | %(lineno)d | %(message)s')
 
 LOG_NAME = 'cian_scrapper.log'
 file_handler = logging.FileHandler(LOG_NAME)
@@ -20,16 +20,10 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
-
 months_dict = {
     'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4,
     'май': 5, 'июнь': 6, 'июль': 7, 'авг': 8,
     'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12
-}
-
-offer_types = {
-    'Вторичка': 'flatSale',
-    'Новостройка': 'newBuildingFlatSale',
 }
 
 # regions_map = {
@@ -42,7 +36,8 @@ CITIES_LIST = []
 URL_NSK = Template('https://cian.ru/cat.php?deal_type=sale&engine_version=2&offer_type=flat&p=$page&region=4897&sort=creation_date_desc')
 URL_SPB = Template('https://cian.ru/cat.php?deal_type=sale&engine_version=2&offer_type=flat&p=$page&region=2&sort=creation_date_desc')
 
-CITIES_LIST.append(URL_NSK, URL_SPB)
+CITIES_LIST.append(URL_NSK)
+CITIES_LIST.append(URL_SPB)
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.79 Safari/537.36'}
 
@@ -63,35 +58,49 @@ HEADERS = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 #         # print(timestamp.year, timestamp.month, timestamp.day, timestamp.hour, timestamp.minute)
 
 
+def get_html(url: str) -> str:
+    s = requests.Session()
+    retries = Retry(total=5,
+                    backoff_factor=0.1,
+                    status_forcelist=[500, 502, 503, 504])
+    s.mount('http://', HTTPAdapter(max_retries=retries))
+    # s.get('http://httpstat.us/500')
+    result = s.get(url, headers=HEADERS, timeout=20).text
+    return result
+
+
 def parse_urls_from_paginated(city_url, parsing_depth: int) -> list:  # TODO insert city_name instead of link
     result = []
-    PARSING_START = datetime.now()
-    parsing_depth = PARSING_START - timedelta(days=parsing_depth)
+    parsing_start = datetime.now()
+    parsing_depth = parsing_start - timedelta(days=parsing_depth)  # TODO change before prod
+    # parsing_depth = parsing_start - timedelta(hours=6)
     page = 1
-    # page = 15  # TODO change to 1 before prod
     job_finished = False
     while not job_finished:
         url = city_url.substitute(page=page)
         try:
-            html_source = requests.get(url, headers=HEADERS).text
+            html_source = get_html(url)
         except Exception as error:
-            logger.error(f'an error {error} has occurred during parsing {url} page')
+            logger.error(f'an error "{error}" has occurred during parsing {url} page')
+            continue
         else:
-            logger.info(f'getting response from {url} page is successful')
-        # with open('html.html', 'r') as file:
-        #     html_source = file.read()
-        # job_finished = True
+            logger.info(f'response from {url} is OK')
 
         soup_page = BeautifulSoup(html_source, 'lxml')
         # soup_page = BeautifulSoup(html_source, 'html.parser')
         flats_articles = soup_page.find_all('article', class_='_93444fe79c--container--Povoi _93444fe79c--cont--OzgVc')
+        logger.debug(f'articles detected on page = {len(flats_articles)}')
+        if len(flats_articles) == 0:
+            job_finished = True
+            logger.error(f'no articles found on {url}, looks like we are being captched')
+            break
         for flat in flats_articles:
             raw_timestamp = flat.find('div', class_='_93444fe79c--absolute--yut0v').text
             raw_timestamp = raw_timestamp.split()
             offer_pub_datetime = datetime.now()
             if len(raw_timestamp) > 2:
                 day = int(raw_timestamp[0])
-                month = raw_timestamp[1][:-1]
+                month = months_dict.get(raw_timestamp[1][:-1])
                 offer_pub_datetime = offer_pub_datetime.replace(day=day, month=month)
             elif raw_timestamp[0] == 'вчера,':
                 offer_pub_datetime = offer_pub_datetime - timedelta(days=1)
@@ -107,29 +116,40 @@ def parse_urls_from_paginated(city_url, parsing_depth: int) -> list:  # TODO ins
             result.append({link: offer_pub_datetime})
         page += 1
         logger.info(f'list parsing - leaving {url} page')
-        time.sleep(3)
+        time.sleep(15)
     return result
 
 
 def parse_card_info(url_timestamp) -> dict:
     card_info = {}
-    url = list(url_timestamp.keys())[0]
+    url = list(url_timestamp.keys())[0]  # TODO uncomment before prod!
+    # url = 'https://novosibirsk.cian.ru/sale/flat/278147129/'
+    logger.debug(f'url = {url}')
     card_info['offer_datetime'] = url_timestamp.get(url)
+    try:
+        # html_source = requests.get(url, headers=HEADERS).text
+        html_source = get_html(url)
+    except Exception as error:
+        html_source = ''
+        card_info['empty_flag'] = True
+        logger.error(f'an error "{error}" has occurred during parsing {url}')
+    else:
+        logger.info(f'response from {url} is OK')
 
-    print('***   START CARD SCRAPING   ***')
-    html_source = requests.get(url, headers=HEADERS).text
+    # logger.debug(f'html_source = {html_source}')  # TODO
+
     soup_page = BeautifulSoup(html_source, 'lxml')
     # soup_page = BeautifulSoup(html_source, 'html.parser')
     card_info['parse_datetime'] = datetime.now()
 
     card_info['offer_id'] = int(url.split('/')[-2])
-    card_info['category'] = offer_types.get(soup_page.find('span', class_='a10a3f92e9--value--Y34zN').text)
+    # card_info['category'] = offer_types.get(soup_page.find('span', class_='a10a3f92e9--value--Y34zN').text)  # TODO delete?
 
     price = soup_page.find('span', class_='a10a3f92e9--price_value--lqIK0').text
     card_info['price'] = int(price[:-1].replace('\xa0', ''))
 
     total_area = soup_page.find('div', class_='a10a3f92e9--info-value--bm3DC').text
-    card_info['total_area'] = float(total_area.split()[0])
+    card_info['total_area'] = float(total_area.split()[0].replace(',', '.'))
 
     floor_num = soup_page.find(
         'div', class_='a10a3f92e9--info-value--bm3DC',
@@ -139,18 +159,65 @@ def parse_card_info(url_timestamp) -> dict:
 
     address_list = soup_page.find('address', class_='a10a3f92e9--address--F06X3').findChildren()
     card_info['city'] = address_list[1].text
-    card_info['street'] = address_list[3].text[:-4]
-    card_info['house'] = address_list[4].text
+    # # card_info['street'] = address_list[3].text[:-4]
+    # # card_info['house'] = address_list[4].text
+    #
+    # building_about = soup_page.find_all('div', class_='a10a3f92e9--value--G2JlN')
+    # # if len(building_about) == 7:  # if building is not finished
+    # #     year_house = int(building_about[0].text)
+    # #     house_material_type = building_about[1].text
+    # # else:
+    # #     year_house = '0'
+    # #     house_material_type = '-'
+    # # # card_info['year_house'] = year_house
+    # # card_info['house_material_type'] = house_material_type
 
-    building_about = soup_page.find_all('div', class_='a10a3f92e9--value--G2JlN')
-    card_info['year_house'] = int(building_about[0].text)
-    card_info['house_material_type'] = building_about[1].text
+    script = soup_page.find('script', type='text/javascript', text=re.compile('"coordinates":*')).string
+    # logger.debug(f'script = {script}')  # TODO
 
-    coordinates_script = soup_page.find('script', type='text/javascript', text=re.compile('"coordinates":*')).string
-    card_info['lat'] = float(re.search('"lat":(\d+)(\.)(\d+)', coordinates_script).group(0).split(':')[-1])
-    card_info['lon'] = float(re.search('"lng":(\d+)(\.)(\d+)', coordinates_script).group(0).split(':')[-1])
+    street = re.search('"street","name":".+?(?=")', script)
+    logger.debug(f'street = {street}')
+    if street is not None:
+        street = street.group(0).split('"')[-1]
+    else:
+        street = re.search('"mikroraion","name":".+?(?=")', script).group(0).split('"')[-1]
+    logger.debug(f'street = {street}')
+    house = re.search('"house","name":".+?(?=")', script).group(0).split('"')[-1]
+    house = house.replace('\\u002F', '/')
+    logger.debug(f'house = {house}')
+    category = re.search('"offer":\{"category":".+?(?=")', script).group(0).split('"')[-1]
+    logger.debug(f'category = {category}')
 
-    print('***   CARD SCRAPING IS DONE   ***')
+    year_house = re.search('"buildYear":.+?(?=,)', script)
+    if year_house is not None:
+        year_house = year_house.group(0).split(':')[-1]
+    else:
+        year_house = re.search('"finishDate": {"quarter": 1, "year":.+?(?=})', script)
+        if year_house is not None:
+            year_house = year_house.group(0).split(':')[-1]
+        else:
+            year_house = '0'
+
+    logger.debug(f'year_house = {year_house}')
+
+
+    house_material_type = re.search('"building": \{"materialType": ".+?(?=,)', script)
+    if house_material_type is not None:
+        house_material_type = house_material_type.group(0).split(':')[-1]
+    else:
+        house_material_type = '-'
+
+
+    card_info['street'] = street
+    card_info['house'] = house
+    card_info['year_house'] = year_house
+    card_info['category'] = category
+    card_info['house_material_type'] = house_material_type
+
+    card_info['lat'] = float(re.search('"lat":(\d+)(\.)(\d+)', script).group(0).split(':')[-1])
+    card_info['lon'] = float(re.search('"lng":(\d+)(\.)(\d+)', script).group(0).split(':')[-1])
+    logger.debug(card_info)
+
     return card_info
 
 
@@ -200,14 +267,19 @@ def search_or_create_building_entry(object_data: dict, connection) -> int:
 
     # create_offer_entry('url from urls list')
     # db.execute_query(connection, pop_offer)
-    pass
+    # pass
 
 
 def create_or_update_offer_entry(object_data: dict, connection):
-    pprint(object_data)
     building_id = search_or_create_building_entry(object_data, connection)
-    # offer_id = object_data.get('offer_id')
-    offer_id = 8
+    offer_id = object_data.get('offer_id')
+    category = object_data.get('category')
+    price = object_data.get('price')
+    total_area = object_data.get('total_area')
+    floor_num = object_data.get('floor_num')
+    offer_datetime = object_data.get('offer_datetime').strftime("%Y-%m-%d %H:%M:%S")
+    parse_datetime = object_data.get('parse_datetime').strftime("%Y-%m-%d %H:%M:%S")
+
     query = f'''
     SELECT offer.offer_id
     FROM offer
@@ -215,50 +287,54 @@ def create_or_update_offer_entry(object_data: dict, connection):
     '''
     object_entry = db.read_query(connection, query=query)
     if len(object_entry):
+        update_offer = f'''
+        UPDATE offer
+        SET category="{category}", price={price}, total_area={total_area}, floor_num={floor_num}, parse_datetime="{parse_datetime}", offer_datetime="{offer_datetime}", building_id={building_id} 
+        WHERE offer_id = {offer_id};
+        '''
+        db.execute_query(connection, update_offer)
         return f'object {offer_id} updated successfully'
-        # print('***   UPDATING OFFER ENTRY   ***')
     else:
-        # print('***   CREATING OFFER ENTRY   ***')
-        category = object_data.get('category')
-        price = object_data.get('price')
-        total_area = object_data.get('total_area')
-        floor_num = object_data.get('floor_num')
-        offer_datetime = object_data.get('offer_datetime').strftime("%Y-%m-%d %H:%M:%S")
-        parse_datetime = object_data.get('parse_datetime').strftime("%Y-%m-%d %H:%M:%S")
-
         create_offer = f'''
         INSERT INTO offer (offer_id, category, price, total_area, floor_num, parse_datetime, offer_datetime, building_id) VALUES
         ({offer_id}, "{category}", {price}, {total_area}, {floor_num}, "{parse_datetime}", "{offer_datetime}", {building_id});
         '''
         db.execute_query(connection, create_offer)
-        return f'object {offer_id} created successfully'
+        return offer_id
 
 
 if __name__ == '__main__':
     flats_links = []
-    for city_url in CITIES_LIST:
-        try:
-            flats_links += parse_urls_from_paginated(city_url, parsing_depth=2)
-        except Exception as error:
-            logger.error(f'an error {error} has occurred during link list parsing, link = {city_url}')
     try:
         connection = db.create_db_connection(db.HOST_NAME, db.USERNAME,
                                              db.PASSWORD, db.DB_NAME)
     except Exception as error:
-        logger.error(f'an error {error} has occurred during establishing connection to db')
-    # card_info = parse_card_info(flats_links[0])
-    # create_or_update_offer_entry(card_info, connection)
+        logger.error(f'an error "{error}" has occurred during establishing connection to db')
+    else:
+        logger.info(f'successfully connected to db')
+
+    for city_url in CITIES_LIST:
+        # try:
+        flats_links += parse_urls_from_paginated(city_url, parsing_depth=2)
+        # except Exception as error:
+        #     logger.error(f'an error "{error}" has occurred during link list parsing, link = {city_url}')
+
+    logger.info(f'links parsing is finished, {len(flats_links)} offers found')
+    # logger.debug(f'flats_links = {flats_links}')
 
     for flat in flats_links:
-        try:
-            card_info = parse_card_info(flat)
-        except Exception as error:
-            logger.error(f'an error {error} has occurred during object list parsing, object = {flat}')
-        try:
-            status = create_or_update_offer_entry(card_info, connection)
-        except Exception as error:
-            logger.error(f'an error {error} has occurred during object list parsing, object = {card_info}')
-        else:
-            logger.info(f'another object ahs been added to db with status: {status}')
-        time.sleep(3)
+        logger.debug(f'flat = {flat}')
+        if not flat.get('empty_flag'):
+            try:
+                card_info = parse_card_info(flat)
+            except Exception as error:
+                logger.error(f'an error "{error}" has occurred during object list parsing, object = {flat}')
+            try:
+                offer_id = create_or_update_offer_entry(card_info, connection)
+            except Exception as error:
+                logger.error(f'an error "{error}" has occurred during object list parsing, object = {card_info}')
+            else:
+                logger.info(f'object {offer_id} has been added to db')
+            time.sleep(15)
+    logger.info(f'parsing task is finished')
 
