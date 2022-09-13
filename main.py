@@ -118,7 +118,6 @@ def get_html(url: str) -> str:
     session.mount('http://', HTTPAdapter(max_retries=retries))
     session.mount('https://', HTTPAdapter(max_retries=retries))
     result = session.get(url, headers=HEADERS, timeout=15).text
-    # result = session.get(url, timeout=15).text
     return result
 
 
@@ -127,12 +126,10 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
     offer_cnt = 0
     country = 'Россия'
     parsing_start = datetime.now()
-    parsing_depth = parsing_start - timedelta(days=parsing_depth)  # TODO change before prod
-    # parsing_depth = parsing_start - timedelta(hours=6)
+    parsing_depth = parsing_start - timedelta(days=parsing_depth)
     page = 1
     while 1:
         url = city_url.substitute(page=page)
-        # logger.debug(f'url = {url}')
         try:
             html_source = get_html(url)
         except Exception as error:
@@ -142,7 +139,6 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
             logger.info(f'response from {url} is OK')
 
         soup_page = BeautifulSoup(html_source, 'lxml')
-        # soup_page = BeautifulSoup(html_source, 'html.parser')
         script = soup_page.find_all('script', type='text/javascript')[3].string
 
         script = script.split(').concat([')[-1]
@@ -156,19 +152,10 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
 
         for offer in offers:
             try:
-                # logger.debug('**********************************************')
-                # logger.debug(' ')
-                # logger.debug(' ')
-                # logger.debug(' ')
-                # logger.debug('**********************************************')
-
-                # logger.debug(f'offer = {offer}')
-
                 object_data = {}
                 raw_timestamp_creation = offer.get('creationDate').split('.')[:-1][0]
                 offer_datetime = datetime.strptime(raw_timestamp_creation, '%Y-%m-%dT%H:%M:%S')
                 if offer_datetime - parsing_depth < timedelta(0):
-                    logger.debug(f'parsing max depth is reached')
                     break
                 object_data['offer_datetime'] = offer_datetime
                 object_data['parse_datetime'] = datetime.now()
@@ -177,12 +164,10 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
                 object_data['category'] = offer.get('category')
 
                 object_data['price'] = offer.get('bargainTerms').get('price')
-                # object_data['total_area'] = offer.get('bargainTerms').get('totalArea')
                 object_data['total_area'] = offer.get('totalArea')
                 object_data['floor_num'] = offer.get('floorNumber')
 
                 geo = offer.get('geo')
-                # logger.debug(f'geo = {geo}')
                 object_data['lat'] = geo.get('coordinates').get('lat')
                 object_data['lon'] = geo.get('coordinates').get('lng')
 
@@ -213,7 +198,6 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
                     object_data['house_material_type'] = building_material_types.get(material_type, material_type)
                 object_data['floors_count'] = building.get('floorsCount')
 
-                # logger.debug(f'object_data = {object_data}')
                 try:
                     create_or_update_offer_entry(object_data, connection)
                 except Exception as error:
