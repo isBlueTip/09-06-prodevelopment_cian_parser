@@ -3,6 +3,8 @@ import requests
 from string import Template
 from datetime import datetime, timedelta
 import time
+import os
+from apscheduler.schedulers.background import BackgroundScheduler
 import db
 import re
 import logging
@@ -26,6 +28,7 @@ building_material_types = {
     'panel': 'Панельный',
     'brick': 'Кирпичный',
     'monolith': 'Монолитный',
+    'stalin': 'Сталинка',
 }
 
 # regions_map = {
@@ -162,7 +165,7 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
                 # logger.debug(f'offer = {offer}')
 
                 object_data = {}
-                raw_timestamp_creation = offer.get('creationDate')
+                raw_timestamp_creation = offer.get('creationDate').split('.')[:-1][0]
                 offer_datetime = datetime.strptime(raw_timestamp_creation, '%Y-%m-%dT%H:%M:%S')
                 if offer_datetime - parsing_depth < timedelta(0):
                     logger.debug(f'parsing max depth is reached')
@@ -223,7 +226,7 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
         else:
             logger.info(f'page # {page} parsing is finished')
             page += 1
-            time.sleep(15)
+            time.sleep(30)
             continue
         break
     if len(failed_items) > 0:
@@ -231,7 +234,7 @@ def parse_paginated_offers(connection, city_url, parsing_depth: int) -> int:  # 
     return offer_cnt
 
 
-if __name__ == '__main__':
+def parse_cities(cities):
     offer_cnt = 0
     try:
         connection = db.create_db_connection(db.HOST_NAME, db.USERNAME,
@@ -241,8 +244,12 @@ if __name__ == '__main__':
     else:
         logger.info(f'successfully connected to db')
 
-    for city_url in CITIES_LIST:
+    for city_url in cities:
         offer_cnt += parse_paginated_offers(connection, city_url, parsing_depth=2)
         logger.info(f'changing city to {city_url}')
 
     logger.info(f'offers parsing is finished, {offer_cnt} found')
+
+
+if __name__ == '__main__':
+    parse_cities(CITIES_LIST)
