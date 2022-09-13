@@ -1,15 +1,15 @@
-from bs4 import BeautifulSoup
-import requests
-from string import Template
-from datetime import datetime, timedelta
-import time
-import os
-from apscheduler.schedulers.background import BackgroundScheduler
-import db
-import re
-import logging
-from requests.adapters import HTTPAdapter, Retry
 import json
+import logging
+import re
+import time
+from datetime import datetime, timedelta
+from string import Template
+
+import requests
+from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter, Retry
+
+import db
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -17,7 +17,7 @@ logger.setLevel(logging.DEBUG)
 formatter = logging.Formatter(
     '%(asctime)s | %(name)s | %(levelname)s | %(lineno)d | %(message)s')
 
-LOG_NAME = 'cian_scrapper.log'
+LOG_NAME = '/home/bluetip/dev/test_tasks/09-06-prodevelopment_cian_parser/cian_scrapper.log'
 file_handler = logging.FileHandler(LOG_NAME)
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
